@@ -1,27 +1,27 @@
-const { db } = require('../config/db');
+const { prisma } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../utils/asyncHandler');
 const { isUuid, getPagination, applyMatchFilters } = require('../utils/query');
-const { Where } = require('../utils/sql');
 const dto = require('../utils/dto');
 const { getStandings, getTopScorers } = require('../services/statsService');
 const { listMatches, getMatchDetail } = require('../services/matchQueries');
 
 // No-auth read-only endpoints for the fan-facing Flutter app / public tournament pages
 const loadOrg = async (slug) => {
-  const { rows } = await db.query('SELECT * FROM organizations WHERE slug = $1 AND is_active', [String(slug).toLowerCase()]);
-  if (!rows[0]) throw new ApiError(404, 'Organization not found');
-  return rows[0];
+  const organization = await prisma.organization.findFirst({
+    where: { slug: String(slug).toLowerCase(), isActive: true },
+  });
+  if (!organization) throw new ApiError(404, 'Organization not found');
+  return organization;
 };
 
 const loadTournament = async (orgSlug, slug) => {
   const org = await loadOrg(orgSlug);
-  const { rows } = await db.query(
-    "SELECT * FROM tournaments WHERE organization_id = $1 AND slug = $2 AND status <> 'draft'",
-    [org.id, String(slug).toLowerCase()]
-  );
-  if (!rows[0]) throw new ApiError(404, 'Tournament not found');
-  return { org, t: rows[0] };
+  const tournament = await prisma.tournament.findFirst({
+    where: { organizationId: org.id, slug: String(slug).toLowerCase(), status: { not: 'draft' } },
+  });
+  if (!tournament) throw new ApiError(404, 'Tournament not found');
+  return { org, t: tournament };
 };
 
 exports.organization = asyncHandler(async (req, res) => {
@@ -31,12 +31,15 @@ exports.organization = asyncHandler(async (req, res) => {
 
 exports.tournaments = asyncHandler(async (req, res) => {
   const org = await loadOrg(req.params.orgSlug);
-  const { rows } = await db.query(
-    `SELECT name, slug, format, status, start_date, end_date, venue FROM tournaments
-      WHERE organization_id = $1 AND status <> 'draft' ORDER BY start_date DESC NULLS LAST, created_at DESC`,
-    [org.id]
-  );
-  res.json({ success: true, data: rows });
+  const tournaments = await prisma.tournament.findMany({
+    where: { organizationId: org.id, status: { not: 'draft' } },
+    select: { name: true, slug: true, format: true, status: true, startDate: true, endDate: true, venue: true },
+    orderBy: [
+      { startDate: { sort: 'desc', nulls: 'last' } },
+      { createdAt: 'desc' },
+    ],
+  });
+  res.json({ success: true, data: tournaments });
 });
 
 exports.tournament = asyncHandler(async (req, res) => {
@@ -47,18 +50,28 @@ exports.tournament = asyncHandler(async (req, res) => {
 
 exports.teams = asyncHandler(async (req, res) => {
   const { t } = await loadTournament(req.params.orgSlug, req.params.slug);
-  const { rows } = await db.query('SELECT id, name, short_name, logo_url FROM teams WHERE tournament_id = $1 ORDER BY name', [t.id]);
-  res.json({ success: true, data: rows });
+  const teams = await prisma.team.findMany({
+    where: { tournamentId: t.id },
+    select: { id: true, name: true, shortName: true, logoUrl: true },
+    orderBy: { name: 'asc' },
+  });
+  res.json({ success: true, data: teams });
 });
 
 exports.team = asyncHandler(async (req, res) => {
   const { t } = await loadTournament(req.params.orgSlug, req.params.slug);
   if (!isUuid(req.params.teamId)) throw new ApiError(404, 'Team not found');
-  const team = await db.query('SELECT id, name, short_name, logo_url FROM teams WHERE id = $1 AND tournament_id = $2', [req.params.teamId, t.id]);
-  if (!team.rows[0]) throw new ApiError(404, 'Team not found');
-  const players = await db.query(
-    'SELECT id, name, jersey_number, position FROM players WHERE team_id = $1 AND is_active ORDER BY jersey_number', [team.rows[0].id]);
-  res.json({ success: true, data: team.rows[0], players: players.rows });
+  const team = await prisma.team.findFirst({
+    where: { id: req.params.teamId, tournamentId: t.id },
+    select: { id: true, name: true, shortName: true, logoUrl: true },
+  });
+  if (!team) throw new ApiError(404, 'Team not found');
+  const players = await prisma.player.findMany({
+    where: { teamId: team.id, isActive: true },
+    select: { id: true, name: true, jerseyNumber: true, position: true },
+    orderBy: { jerseyNumber: 'asc' },
+  });
+  res.json({ success: true, data: team, players });
 });
 
 exports.standings = asyncHandler(async (req, res) => {
@@ -69,7 +82,7 @@ exports.standings = asyncHandler(async (req, res) => {
 
 exports.matches = asyncHandler(async (req, res) => {
   const { org, t } = await loadTournament(req.params.orgSlug, req.params.slug);
-  const where = new Where().add('m.organization_id = $#', org.id).add('m.tournament_id = $#', t.id);
+  const where = { organizationId: org.id, tournamentId: t.id };
   const q = { ...req.query };
   delete q.tournament; // fixed by the URL
   applyMatchFilters(where, q);

@@ -1,4 +1,4 @@
-// Safe query-string helpers (type-checked, always bound as SQL parameters)
+// Safe query-string helpers for Prisma filters.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
@@ -11,20 +11,24 @@ const getPagination = (query, defaultLimit = 50, maxLimit = 200) => {
   return { page, limit, skip: (page - 1) * limit };
 };
 
-// Adds match filters (tournament, team, status, round, from, to) to a Where builder
+// Builds Prisma match filters (tournament, team, status, round, from, to).
 const applyMatchFilters = (where, q) => {
   const tournament = uuid(q.tournament);
-  if (tournament) where.add('m.tournament_id = $#', tournament);
+  if (tournament) where.tournamentId = tournament;
   const team = uuid(q.team);
-  if (team) where.add('(m.home_team_id = $# OR m.away_team_id = $#)', team);
+  if (team) where.OR = [{ homeTeamId: team }, { awayTeamId: team }];
   const status = str(q.status);
-  if (status) where.add('m.status = $#', status);
+  if (status) where.status = status;
   const round = parseInt(q.round, 10);
-  if (!Number.isNaN(round)) where.add('m.round = $#', round);
+  if (!Number.isNaN(round)) where.round = round;
   const from = str(q.from);
-  if (from && !Number.isNaN(Date.parse(from))) where.add('m.scheduled_at >= $#', new Date(from));
+  if (from && !Number.isNaN(Date.parse(from))) {
+    where.scheduledAt = { ...where.scheduledAt, gte: new Date(from) };
+  }
   const to = str(q.to);
-  if (to && !Number.isNaN(Date.parse(to))) where.add('m.scheduled_at <= $#', new Date(to));
+  if (to && !Number.isNaN(Date.parse(to))) {
+    where.scheduledAt = { ...where.scheduledAt, lte: new Date(to) };
+  }
   return where;
 };
 

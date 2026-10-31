@@ -6,28 +6,10 @@ const addDays = (date, n) => {
   return d;
 };
 
-// Bulk insert (chunked to stay under PostgreSQL's 65,535 bind-parameter limit)
 async function insertMatches(runner, docs) {
-  const cols = ['organization_id', 'tournament_id', 'round', 'round_name', 'home_team_id',
-                'away_team_id', 'scheduled_at', 'status', 'winner_id', 'is_bye'];
-  const out = [];
-  for (let i = 0; i < docs.length; i += 500) {
-    const chunk = docs.slice(i, i + 500);
-    const values = [];
-    const tuples = chunk.map((d, idx) => {
-      values.push(d.organizationId, d.tournamentId, d.round, d.roundName, d.homeTeamId,
-                  d.awayTeamId ?? null, d.scheduledAt ?? null, d.status ?? 'scheduled',
-                  d.winnerId ?? null, d.isBye ?? false);
-      const base = idx * cols.length;
-      return `(${cols.map((_, j) => `$${base + j + 1}`).join(',')})`;
-    });
-    const { rows } = await runner.query(
-      `INSERT INTO matches (${cols.join(',')}) VALUES ${tuples.join(',')} RETURNING *`,
-      values
-    );
-    out.push(...rows);
-  }
-  return out;
+  if (!docs.length) return [];
+  const matches = await runner.match.createManyAndReturn({ data: docs });
+  return matches.map((match) => ({ ...match, seq: match.seq.toString() }));
 }
 exports.insertMatches = insertMatches;
 

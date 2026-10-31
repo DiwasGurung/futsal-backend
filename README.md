@@ -19,7 +19,7 @@ Or with Docker: `docker compose up --build` (set `DATABASE_URL` and `JWT_SECRET`
 - Set `DIRECT_URL` (or Neon's `DATABASE_URL_UNPOOLED`) to the matching unpooled/direct connection string for Prisma migrations. Use Neon Console's connection details and keep both URLs private.
 - Run `npm run migrate` to apply checked-in Prisma migrations. `npm run migrate:dev` creates a migration during local schema development.
 - `prisma/schema.prisma` is the Prisma model source. `src/db/schema.sql` remains available for the Neon SQL Editor and includes the standings view, constraints, and timestamp triggers. Its initial migration is idempotent, so `npm run migrate` also records the schema if it was first created in Neon Console.
-- The API uses Prisma Client's parameterized raw-query and transaction APIs to preserve its existing SQL behavior, including the standings view and custom PostgreSQL queries.
+- Application database reads and writes use Prisma Client's model API, including match reports and standings. Prisma transactions keep multi-step updates atomic; parameterized raw queries remain only for the PostgreSQL health check and row locks during fixture generation, match-event updates, and tournament-round updates.
 
 Demo logins after seeding: `owner@demo.com` / `password123`, `scorer@demo.com` / `password123`
 

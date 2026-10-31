@@ -1,7 +1,6 @@
 // Usage: npm run seed  -> demo organization with a league, teams, players and two played matchdays
 const bcrypt = require('bcryptjs');
-const { db, tx, prisma } = require('../config/db');
-const { insertRow } = require('../utils/sql');
+const { tx, prisma } = require('../config/db');
 const { createLeagueFixtures } = require('../services/fixtureService');
 
 const rnd = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
@@ -13,35 +12,46 @@ const LAST = ['Sharma', 'Thapa', 'Gurung', 'Rai', 'Karki', 'Shrestha', 'Adhikari
 const POSITIONS = ['goalkeeper', 'fixo', 'ala', 'ala', 'pivot', 'pivot'];
 
 (async () => {
-  await db.query("DELETE FROM organizations WHERE slug = 'demo-futsal'"); // cascades everything
+  await prisma.organization.deleteMany({ where: { slug: 'demo-futsal' } });
 
   await tx(async (t) => {
-    const org = await insertRow(t, 'organizations', { name: 'Demo Futsal League', slug: 'demo-futsal', plan: 'pro' });
+    const org = await t.organization.create({
+      data: { name: 'Demo Futsal League', slug: 'demo-futsal', plan: 'pro' },
+    });
     const hash = await bcrypt.hash('password123', 12);
-    await insertRow(t, 'users', { organizationId: org.id, name: 'Demo Owner', email: 'owner@demo.com', passwordHash: hash, role: 'owner' });
-    await insertRow(t, 'users', { organizationId: org.id, name: 'Demo Scorer', email: 'scorer@demo.com', passwordHash: hash, role: 'scorekeeper' });
+    await t.user.createMany({
+      data: [
+        { organizationId: org.id, name: 'Demo Owner', email: 'owner@demo.com', passwordHash: hash, role: 'owner' },
+        { organizationId: org.id, name: 'Demo Scorer', email: 'scorer@demo.com', passwordHash: hash, role: 'scorekeeper' },
+      ],
+    });
 
-    const tournament = await insertRow(t, 'tournaments', {
-      organizationId: org.id, name: 'Spring Futsal Cup', slug: 'spring-futsal-cup',
-      format: 'league', status: 'ongoing', venue: 'City Indoor Arena', startDate: new Date(), fixturesGenerated: true,
+    const tournament = await t.tournament.create({
+      data: {
+        organizationId: org.id, name: 'Spring Futsal Cup', slug: 'spring-futsal-cup',
+        format: 'league', status: 'ongoing', venue: 'City Indoor Arena', startDate: new Date(), fixturesGenerated: true,
+      },
     });
 
     const playersByTeam = {};
     const teamIds = [];
     for (const name of TEAMS) {
-      const team = await insertRow(t, 'teams', {
-        organizationId: org.id, tournamentId: tournament.id, name,
-        shortName: name.split(' ').map((w) => w[0]).join('').slice(0, 3),
+      const team = await t.team.create({
+        data: {
+          organizationId: org.id, tournamentId: tournament.id, name,
+          shortName: name.split(' ').map((w) => w[0]).join('').slice(0, 3),
+        },
       });
       teamIds.push(team.id);
       playersByTeam[team.id] = [];
-      for (let i = 0; i < 8; i++) {
-        const p = await insertRow(t, 'players', {
+      const players = await t.player.createManyAndReturn({
+        data: Array.from({ length: 8 }, (_, i) => ({
           organizationId: org.id, teamId: team.id, name: `${pick(FIRST)} ${pick(LAST)}`,
           jerseyNumber: i + 1, position: POSITIONS[i % POSITIONS.length],
-        });
-        playersByTeam[team.id].push(p.id);
-      }
+        })),
+        select: { id: true },
+      });
+      playersByTeam[team.id].push(...players.map((player) => player.id));
     }
 
     const matches = await createLeagueFixtures(t, tournament, teamIds, { startDate: new Date(), roundIntervalDays: 7 });
@@ -50,21 +60,26 @@ const POSITIONS = ['goalkeeper', 'fixo', 'ala', 'ala', 'pivot', 'pivot'];
     for (const m of matches.filter((x) => x.round <= 2)) {
       const hs = rnd(0, 6);
       const as = rnd(0, 6);
-      const goals = async (teamId, n) => {
+      const events = [];
+      const goals = (teamId, n) => {
         for (let i = 0; i < n; i++) {
-          await t.query(
-            "INSERT INTO match_events (match_id, type, team_id, player_id, minute) VALUES ($1,'goal',$2,$3,$4)",
-            [m.id, teamId, pick(playersByTeam[teamId]), rnd(1, 40)]
-          );
+          events.push({
+            matchId: m.id,
+            type: 'goal',
+            teamId,
+            playerId: pick(playersByTeam[teamId]),
+            minute: rnd(1, 40),
+          });
         }
       };
-      await goals(m.homeTeamId, hs);
-      await goals(m.awayTeamId, as);
+      goals(m.homeTeamId, hs);
+      goals(m.awayTeamId, as);
+      if (events.length) await t.matchEvent.createMany({ data: events });
       const winner = hs > as ? m.homeTeamId : as > hs ? m.awayTeamId : null;
-      await t.query(
-        "UPDATE matches SET status = 'finished', home_score = $1, away_score = $2, winner_id = $3 WHERE id = $4",
-        [hs, as, winner, m.id]
-      );
+      await t.match.update({
+        where: { id: m.id },
+        data: { status: 'finished', homeScore: hs, awayScore: as, winnerId: winner },
+      });
     }
   });
 

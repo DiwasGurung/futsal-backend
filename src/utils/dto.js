@@ -19,3 +19,8 @@ exports.team = (t) => {
   const { managerName, managerPhone, managerEmail, ...rest } = t;
   return { ...rest, manager: { name: managerName, phone: managerPhone, email: managerEmail } };
 };
+
+exports.player = (player) => ({
+  ...player,
+  ...(player.dateOfBirth && { dateOfBirth: player.dateOfBirth.toISOString().slice(0, 10) }),
+});

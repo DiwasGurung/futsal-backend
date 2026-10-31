@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const env = require('../config/env');
-const { db } = require('../config/db');
+const { prisma } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../utils/asyncHandler');
 const { isUuid } = require('../utils/query');
@@ -18,23 +18,26 @@ exports.protect = asyncHandler(async (req, res, next) => {
   }
   if (!isUuid(decoded.id)) throw new ApiError(401, 'Invalid token');
 
-  const { rows } = await db.query(
-    `SELECT u.id, u.name, u.email, u.role, u.is_active,
-            o.id AS org_id, o.name AS org_name, o.slug AS org_slug, o.plan AS org_plan,
-            o.logo_url AS org_logo_url, o.contact_email AS org_contact_email, o.is_active AS org_is_active
-       FROM users u JOIN organizations o ON o.id = u.organization_id
-      WHERE u.id = $1`,
-    [decoded.id]
-  );
-  const r = rows[0];
-  if (!r || !r.isActive || !r.orgIsActive) throw new ApiError(401, 'Account is disabled or no longer exists');
+  const r = await prisma.user.findUnique({
+    where: { id: decoded.id },
+    select: {
+      id: true, name: true, email: true, role: true, isActive: true,
+      organization: {
+        select: {
+          id: true, name: true, slug: true, plan: true, logoUrl: true, contactEmail: true, isActive: true,
+        },
+      },
+    },
+  });
+  if (!r || !r.isActive || !r.organization.isActive) {
+    throw new ApiError(401, 'Account is disabled or no longer exists');
+  }
 
   req.user = { id: r.id, name: r.name, email: r.email, role: r.role };
   req.org = {
-    id: r.orgId, name: r.orgName, slug: r.orgSlug, plan: r.orgPlan,
-    logoUrl: r.orgLogoUrl, contactEmail: r.orgContactEmail, isActive: r.orgIsActive,
+    ...r.organization,
   };
-  req.orgId = r.orgId;
+  req.orgId = r.organization.id;
   next();
 });
 

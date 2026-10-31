@@ -1,43 +1,43 @@
-const { db, tx } = require('../config/db');
+const { prisma, tx } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../utils/asyncHandler');
 const findOwned = require('../utils/findOwned');
 const { uniqueSlug } = require('../utils/slugify');
 const { str, getPagination } = require('../utils/query');
-const { insertRow, updateRow, Where } = require('../utils/sql');
 const dto = require('../utils/dto');
 const { createLeagueFixtures, createKnockoutRound } = require('../services/fixtureService');
 const { getStandings, getTopScorers } = require('../services/statsService');
 
 exports.list = asyncHandler(async (req, res) => {
-  const where = new Where().add('organization_id = $#', req.orgId);
+  const where = { organizationId: req.orgId };
   const status = str(req.query.status);
-  if (status) where.add('status = $#', status);
+  if (status) where.status = status;
   const { page, limit, skip } = getPagination(req.query);
 
-  const [rows, count] = await Promise.all([
-    db.query(`SELECT * FROM tournaments ${where.sql} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${skip}`, where.params),
-    db.query(`SELECT COUNT(*)::int AS total FROM tournaments ${where.sql}`, where.params),
+  const [rows, total] = await Promise.all([
+    prisma.tournament.findMany({ where, orderBy: { createdAt: 'desc' }, take: limit, skip }),
+    prisma.tournament.count({ where }),
   ]);
-  res.json({ success: true, data: rows.rows.map(dto.tournament), meta: { page, limit, total: count.rows[0].total } });
+  res.json({ success: true, data: rows.map(dto.tournament), meta: { page, limit, total } });
 });
 
 exports.create = asyncHandler(async (req, res) => {
   const { rules = {}, ...rest } = req.body;
   const slug = await uniqueSlug('tournaments', rest.name, req.orgId);
-  const row = await insertRow(db, 'tournaments', { ...rest, ...rules, organizationId: req.orgId, slug });
+  const row = await prisma.tournament.create({
+    data: { ...rest, ...rules, organizationId: req.orgId, slug },
+  });
   res.status(201).json({ success: true, data: dto.tournament(row) });
 });
 
 exports.get = asyncHandler(async (req, res) => {
   const t = await findOwned('tournaments', req.params.id, req.orgId, 'Tournament');
-  const { rows } = await db.query(
-    `SELECT (SELECT COUNT(*)::int FROM teams   WHERE tournament_id = $1) AS teams,
-            (SELECT COUNT(*)::int FROM matches WHERE tournament_id = $1 AND NOT is_bye) AS matches,
-            (SELECT COUNT(*)::int FROM matches WHERE tournament_id = $1 AND NOT is_bye AND status = 'finished') AS finished_matches`,
-    [t.id]
-  );
-  res.json({ success: true, data: dto.tournament(t), counts: rows[0] });
+  const [teams, matches, finishedMatches] = await Promise.all([
+    prisma.team.count({ where: { tournamentId: t.id } }),
+    prisma.match.count({ where: { tournamentId: t.id, isBye: false } }),
+    prisma.match.count({ where: { tournamentId: t.id, isBye: false, status: 'finished' } }),
+  ]);
+  res.json({ success: true, data: dto.tournament(t), counts: { teams, matches, finishedMatches } });
 });
 
 exports.update = asyncHandler(async (req, res) => {
@@ -46,13 +46,13 @@ exports.update = asyncHandler(async (req, res) => {
   if (rest.format && rest.format !== t.format && t.fixturesGenerated) {
     throw new ApiError(409, 'Format cannot change after fixtures are generated');
   }
-  const row = await updateRow(db, 'tournaments', t.id, { ...rest, ...rules });
+  const row = await prisma.tournament.update({ where: { id: t.id }, data: { ...rest, ...rules } });
   res.json({ success: true, data: dto.tournament(row) });
 });
 
 exports.remove = asyncHandler(async (req, res) => {
   const t = await findOwned('tournaments', req.params.id, req.orgId, 'Tournament');
-  await db.query('DELETE FROM tournaments WHERE id = $1', [t.id]); // cascades to teams/players/matches/events
+  await prisma.tournament.delete({ where: { id: t.id } });
   res.json({ success: true, message: 'Tournament and all related data deleted' });
 });
 
@@ -63,19 +63,24 @@ exports.generateFixtures = asyncHandler(async (req, res) => {
     // lock the tournament row so two admins can't generate at the same time
     const tournament = await findOwned('tournaments', req.params.id, req.orgId, 'Tournament', t, true);
 
-    const teams = await t.query('SELECT id FROM teams WHERE tournament_id = $1 ORDER BY created_at, id', [tournament.id]);
-    if (teams.rowCount < 2) throw new ApiError(400, 'At least 2 teams are required to generate fixtures');
-    const teamIds = teams.rows.map((x) => x.id);
+    const teams = await t.team.findMany({
+      where: { tournamentId: tournament.id },
+      select: { id: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    if (teams.length < 2) throw new ApiError(400, 'At least 2 teams are required to generate fixtures');
+    const teamIds = teams.map((x) => x.id);
 
-    const existing = await t.query('SELECT 1 FROM matches WHERE tournament_id = $1 LIMIT 1', [tournament.id]);
-    if (existing.rowCount) {
+    const existing = await t.match.count({ where: { tournamentId: tournament.id } });
+    if (existing) {
       if (!regenerate) {
         throw new ApiError(409, 'Fixtures already exist. Send { "regenerate": true } to rebuild (only allowed before any match starts).');
       }
-      const started = await t.query(
-        "SELECT 1 FROM matches WHERE tournament_id = $1 AND status IN ('live','finished') LIMIT 1", [tournament.id]);
-      if (started.rowCount) throw new ApiError(409, 'Cannot regenerate: some matches have already started');
-      await t.query('DELETE FROM matches WHERE tournament_id = $1', [tournament.id]);
+      const started = await t.match.count({
+        where: { tournamentId: tournament.id, status: { in: ['live', 'finished'] } },
+      });
+      if (started) throw new ApiError(409, 'Cannot regenerate: some matches have already started');
+      await t.match.deleteMany({ where: { tournamentId: tournament.id } });
     }
 
     const created =
@@ -83,7 +88,10 @@ exports.generateFixtures = asyncHandler(async (req, res) => {
         ? await createKnockoutRound(t, tournament, teamIds, 1, { shuffle, startDate })
         : await createLeagueFixtures(t, tournament, teamIds, { doubleRound, startDate, roundIntervalDays });
 
-    await t.query("UPDATE tournaments SET fixtures_generated = TRUE, status = 'ongoing' WHERE id = $1", [tournament.id]);
+    await t.tournament.update({
+      where: { id: tournament.id },
+      data: { fixturesGenerated: true, status: 'ongoing' },
+    });
     return created;
   });
 
@@ -96,17 +104,23 @@ exports.advance = asyncHandler(async (req, res) => {
     const tournament = await findOwned('tournaments', req.params.id, req.orgId, 'Tournament', t, true);
     if (tournament.format !== 'knockout') throw new ApiError(400, 'Only knockout tournaments can advance rounds');
 
-    const last = (await t.query('SELECT MAX(round)::int AS round FROM matches WHERE tournament_id = $1', [tournament.id])).rows[0].round;
+    const { _max } = await t.match.aggregate({
+      where: { tournamentId: tournament.id },
+      _max: { round: true },
+    });
+    const last = _max.round;
     if (!last) throw new ApiError(400, 'Generate fixtures first');
 
-    const { rows: current } = await t.query(
-      'SELECT * FROM matches WHERE tournament_id = $1 AND round = $2 ORDER BY seq', [tournament.id, last]);
+    const current = await t.match.findMany({
+      where: { tournamentId: tournament.id, round: last },
+      orderBy: { seq: 'asc' },
+    });
     if (current.some((m) => m.status !== 'finished' || !m.winnerId)) {
       throw new ApiError(409, 'All matches in the current round must be finished with a winner');
     }
 
     if (current.length === 1) {
-      await t.query("UPDATE tournaments SET status = 'completed' WHERE id = $1", [tournament.id]);
+      await t.tournament.update({ where: { id: tournament.id }, data: { status: 'completed' } });
       return { completed: true, championTeamId: current[0].winnerId };
     }
     const created = await createKnockoutRound(t, tournament, current.map((m) => m.winnerId), last + 1, { shuffle: false });
