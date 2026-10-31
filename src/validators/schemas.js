@@ -1,6 +1,6 @@
 const { z } = require('zod');
 
-const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ID');
+const uuid = z.string().uuid('Invalid ID');
 const email = z.string().trim().toLowerCase().email();
 const password = z.string().min(8, 'Password must be at least 8 characters').max(72);
 const name = z.string().trim().min(2).max(80);
@@ -57,7 +57,7 @@ const teamFields = {
   logoUrl: z.string().url().optional(),
   manager: z.object({ name: z.string(), phone: z.string(), email: z.string().email() }).partial().optional(),
 };
-exports.createTeam = z.object({ tournament: objectId, ...teamFields });
+exports.createTeam = z.object({ tournament: uuid, ...teamFields });
 exports.updateTeam = z.object(teamFields).partial();
 
 const playerFields = {
@@ -67,7 +67,7 @@ const playerFields = {
   dateOfBirth: z.coerce.date().optional(),
   isActive: z.boolean().optional(),
 };
-exports.createPlayer = z.object({ team: objectId, ...playerFields });
+exports.createPlayer = z.object({ team: uuid, ...playerFields });
 exports.updatePlayer = z.object(playerFields).partial();
 
 // ---- matches ----
@@ -78,8 +78,8 @@ exports.updateMatch = z.object({
 });
 exports.matchEvent = z.object({
   type: z.enum(['goal', 'own_goal', 'yellow_card', 'red_card']),
-  team: objectId,
-  player: objectId.optional(),
+  team: uuid,
+  player: uuid.optional(),
   minute: z.number().int().min(0).max(120).default(0),
 });
 exports.finishMatch = z.object({

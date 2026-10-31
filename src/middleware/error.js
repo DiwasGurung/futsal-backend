@@ -4,21 +4,33 @@ const ApiError = require('../utils/ApiError');
 exports.notFound = (req, res, next) =>
   next(new ApiError(404, `Route not found: ${req.method} ${req.originalUrl}`));
 
+// Maps PostgreSQL error codes to HTTP responses
 exports.errorHandler = (err, req, res, next) => {
   let status = err.status || 500;
   let message = err.message;
-  let details = err.details;
+  const details = err.details;
 
-  if (err.code === 11000) {
-    status = 409;
-    message = `Duplicate value for: ${Object.keys(err.keyPattern || {}).join(', ') || 'unique field'}`;
-  } else if (err.name === 'ValidationError') {
-    status = 400;
-    message = 'Validation failed';
-    details = Object.values(err.errors).map((e) => ({ field: e.path, message: e.message }));
-  } else if (err.name === 'CastError') {
-    status = 400;
-    message = 'Invalid ID';
+  switch (err.code) {
+    case '23505': // unique_violation
+      status = 409;
+      message = 'Duplicate value: a record with the same unique field already exists';
+      break;
+    case '23503': // foreign_key_violation
+      status = 409;
+      message = 'Referenced record does not exist or is still in use';
+      break;
+    case '23514': // check_violation
+    case '23502': // not_null_violation
+      status = 400;
+      message = 'Invalid data';
+      break;
+    case '22P02': // invalid_text_representation (bad UUID etc.)
+    case '22007':
+    case '22008':
+      status = 400;
+      message = 'Invalid input value';
+      break;
+    default:
   }
 
   if (status === 500) {

@@ -1,6 +1,5 @@
-const mongoose = require('mongoose');
 const env = require('./config/env');
-const connectDB = require('./config/db');
+const { pool, connectDB } = require('./config/db');
 const app = require('./app');
 
 (async () => {
@@ -12,7 +11,7 @@ const app = require('./app');
 
   const shutdown = () =>
     server.close(async () => {
-      await mongoose.connection.close();
+      await pool.end();
       process.exit(0);
     });
   process.on('SIGTERM', shutdown);

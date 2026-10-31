@@ -1,25 +1,27 @@
-const Organization = require('../models/Organization');
-const Tournament = require('../models/Tournament');
-const Team = require('../models/Team');
-const Player = require('../models/Player');
-const Match = require('../models/Match');
+const { db } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../utils/asyncHandler');
-const { getPagination, matchFilter } = require('../utils/query');
+const { isUuid, getPagination, applyMatchFilters } = require('../utils/query');
+const { Where } = require('../utils/sql');
+const dto = require('../utils/dto');
 const { getStandings, getTopScorers } = require('../services/statsService');
+const { listMatches, getMatchDetail } = require('../services/matchQueries');
 
 // No-auth read-only endpoints for the fan-facing Flutter app / public tournament pages
 const loadOrg = async (slug) => {
-  const org = await Organization.findOne({ slug: String(slug).toLowerCase(), isActive: true });
-  if (!org) throw new ApiError(404, 'Organization not found');
-  return org;
+  const { rows } = await db.query('SELECT * FROM organizations WHERE slug = $1 AND is_active', [String(slug).toLowerCase()]);
+  if (!rows[0]) throw new ApiError(404, 'Organization not found');
+  return rows[0];
 };
 
 const loadTournament = async (orgSlug, slug) => {
   const org = await loadOrg(orgSlug);
-  const t = await Tournament.findOne({ organization: org._id, slug: String(slug).toLowerCase(), status: { $ne: 'draft' } });
-  if (!t) throw new ApiError(404, 'Tournament not found');
-  return { org, t };
+  const { rows } = await db.query(
+    "SELECT * FROM tournaments WHERE organization_id = $1 AND slug = $2 AND status <> 'draft'",
+    [org.id, String(slug).toLowerCase()]
+  );
+  if (!rows[0]) throw new ApiError(404, 'Tournament not found');
+  return { org, t: rows[0] };
 };
 
 exports.organization = asyncHandler(async (req, res) => {
@@ -29,63 +31,62 @@ exports.organization = asyncHandler(async (req, res) => {
 
 exports.tournaments = asyncHandler(async (req, res) => {
   const org = await loadOrg(req.params.orgSlug);
-  const data = await Tournament.find({ organization: org._id, status: { $ne: 'draft' } })
-    .select('name slug format status startDate endDate venue')
-    .sort('-startDate');
-  res.json({ success: true, data });
+  const { rows } = await db.query(
+    `SELECT name, slug, format, status, start_date, end_date, venue FROM tournaments
+      WHERE organization_id = $1 AND status <> 'draft' ORDER BY start_date DESC NULLS LAST, created_at DESC`,
+    [org.id]
+  );
+  res.json({ success: true, data: rows });
 });
 
 exports.tournament = asyncHandler(async (req, res) => {
   const { t } = await loadTournament(req.params.orgSlug, req.params.slug);
-  res.json({ success: true, data: t });
+  const { organizationId, ...pub } = dto.tournament(t);
+  res.json({ success: true, data: pub });
 });
 
 exports.teams = asyncHandler(async (req, res) => {
   const { t } = await loadTournament(req.params.orgSlug, req.params.slug);
-  res.json({ success: true, data: await Team.find({ tournament: t._id }).select('name shortName logoUrl').sort('name') });
+  const { rows } = await db.query('SELECT id, name, short_name, logo_url FROM teams WHERE tournament_id = $1 ORDER BY name', [t.id]);
+  res.json({ success: true, data: rows });
 });
 
 exports.team = asyncHandler(async (req, res) => {
   const { t } = await loadTournament(req.params.orgSlug, req.params.slug);
-  const team = await Team.findOne({ _id: req.params.teamId, tournament: t._id }).select('name shortName logoUrl');
-  if (!team) throw new ApiError(404, 'Team not found');
-  const players = await Player.find({ team: team._id, isActive: true }).select('name jerseyNumber position').sort('jerseyNumber');
-  res.json({ success: true, data: team, players });
+  if (!isUuid(req.params.teamId)) throw new ApiError(404, 'Team not found');
+  const team = await db.query('SELECT id, name, short_name, logo_url FROM teams WHERE id = $1 AND tournament_id = $2', [req.params.teamId, t.id]);
+  if (!team.rows[0]) throw new ApiError(404, 'Team not found');
+  const players = await db.query(
+    'SELECT id, name, jersey_number, position FROM players WHERE team_id = $1 AND is_active ORDER BY jersey_number', [team.rows[0].id]);
+  res.json({ success: true, data: team.rows[0], players: players.rows });
 });
 
 exports.standings = asyncHandler(async (req, res) => {
   const { t } = await loadTournament(req.params.orgSlug, req.params.slug);
   if (t.format !== 'league') throw new ApiError(400, 'Standings are only available for league tournaments');
-  res.json({ success: true, data: await getStandings(t) });
+  res.json({ success: true, data: await getStandings(t.id) });
 });
 
 exports.matches = asyncHandler(async (req, res) => {
   const { org, t } = await loadTournament(req.params.orgSlug, req.params.slug);
-  const filter = { ...matchFilter(req.query), organization: org._id, tournament: t._id };
+  const where = new Where().add('m.organization_id = $#', org.id).add('m.tournament_id = $#', t.id);
+  const q = { ...req.query };
+  delete q.tournament; // fixed by the URL
+  applyMatchFilters(where, q);
   const { page, limit, skip } = getPagination(req.query);
-  const [data, total] = await Promise.all([
-    Match.find(filter)
-      .select('-events')
-      .populate('homeTeam awayTeam', 'name shortName logoUrl')
-      .sort({ round: 1, scheduledAt: 1, _id: 1 })
-      .skip(skip)
-      .limit(limit),
-    Match.countDocuments(filter),
-  ]);
+  const { data, total } = await listMatches(where, { limit, skip });
   res.json({ success: true, data, meta: { page, limit, total } });
 });
 
 // Poll this (or add websockets later) for live score screens
 exports.match = asyncHandler(async (req, res) => {
   const { org, t } = await loadTournament(req.params.orgSlug, req.params.slug);
-  const match = await Match.findOne({ _id: req.params.matchId, organization: org._id, tournament: t._id })
-    .populate('homeTeam awayTeam', 'name shortName logoUrl')
-    .populate('events.player', 'name jerseyNumber');
+  const match = await getMatchDetail(req.params.matchId, org.id, t.id);
   if (!match) throw new ApiError(404, 'Match not found');
   res.json({ success: true, data: match });
 });
 
 exports.topScorers = asyncHandler(async (req, res) => {
   const { t } = await loadTournament(req.params.orgSlug, req.params.slug);
-  res.json({ success: true, data: await getTopScorers(t._id, Math.min(parseInt(req.query.limit, 10) || 10, 50)) });
+  res.json({ success: true, data: await getTopScorers(t.id, Math.min(parseInt(req.query.limit, 10) || 10, 50)) });
 });

@@ -1,31 +1,34 @@
 const plans = require('../config/plans');
-const Tournament = require('../models/Tournament');
-const User = require('../models/User');
-const Team = require('../models/Team');
+const { db } = require('../config/db');
 const asyncHandler = require('../utils/asyncHandler');
+const { updateRow } = require('../utils/sql');
+const dto = require('../utils/dto');
 
-// Returns org profile + plan limits + current usage (for a billing/usage screen)
+const finite = (n) => (Number.isFinite(n) ? n : null); // null = unlimited
+
+// Org profile + plan limits + current usage (for a billing/usage screen)
 exports.get = asyncHandler(async (req, res) => {
-  const [tournaments, staff, teams] = await Promise.all([
-    Tournament.countDocuments({ organization: req.orgId }),
-    User.countDocuments({ organization: req.orgId }),
-    Team.countDocuments({ organization: req.orgId }),
-  ]);
+  const { rows } = await db.query(
+    `SELECT (SELECT COUNT(*)::int FROM tournaments WHERE organization_id = $1) AS tournaments,
+            (SELECT COUNT(*)::int FROM users       WHERE organization_id = $1) AS staff,
+            (SELECT COUNT(*)::int FROM teams       WHERE organization_id = $1) AS teams`,
+    [req.orgId]
+  );
   const limits = plans[req.org.plan] || plans.free;
   res.json({
     success: true,
     data: req.org,
     limits: {
-      maxTournaments: Number.isFinite(limits.maxTournaments) ? limits.maxTournaments : null,
-      maxTeamsPerTournament: Number.isFinite(limits.maxTeamsPerTournament) ? limits.maxTeamsPerTournament : null,
-      maxStaff: Number.isFinite(limits.maxStaff) ? limits.maxStaff : null,
+      maxTournaments: finite(limits.maxTournaments),
+      maxTeamsPerTournament: finite(limits.maxTeamsPerTournament),
+      maxStaff: finite(limits.maxStaff),
     },
-    usage: { tournaments, staff, teams },
+    usage: rows[0],
   });
 });
 
 exports.update = asyncHandler(async (req, res) => {
-  Object.assign(req.org, req.body); // slug and plan are never client-editable
-  await req.org.save();
-  res.json({ success: true, data: req.org });
+  // slug and plan are never client-editable
+  const org = await updateRow(db, 'organizations', req.orgId, req.body);
+  res.json({ success: true, data: dto.org(org) });
 });

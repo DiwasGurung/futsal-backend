@@ -1,37 +1,38 @@
-const mongoose = require('mongoose');
-const Team = require('../models/Team');
-const Match = require('../models/Match');
-const Player = require('../models/Player');
-const { computeStandings } = require('../utils/standings');
+const { db } = require('../config/db');
 
-exports.getStandings = async (tournament) => {
-  const [teams, matches] = await Promise.all([
-    Team.find({ tournament: tournament._id }).select('name shortName logoUrl').lean(),
-    Match.find({ tournament: tournament._id, status: 'finished', isBye: { $ne: true } })
-      .select('homeTeam awayTeam homeScore awayScore status isBye')
-      .lean(),
-  ]);
-  return computeStandings(teams, matches, tournament.rules);
+// Uses the tournament_standings view (defined in schema.sql)
+exports.getStandings = async (tournamentId) => {
+  const { rows } = await db.query(
+    'SELECT * FROM tournament_standings WHERE tournament_id = $1 ORDER BY position',
+    [tournamentId]
+  );
+  return rows.map((r) => ({
+    position: r.position,
+    team: { id: r.teamId, name: r.name, shortName: r.shortName, logoUrl: r.logoUrl },
+    played: r.played, won: r.won, drawn: r.drawn, lost: r.lost,
+    goalsFor: r.goalsFor, goalsAgainst: r.goalsAgainst, goalDifference: r.goalDifference,
+    points: r.points,
+  }));
 };
 
-exports.getTopScorers = async (tournamentId, limit = 10) =>
-  Match.aggregate([
-    { $match: { tournament: new mongoose.Types.ObjectId(String(tournamentId)) } },
-    { $unwind: '$events' },
-    { $match: { 'events.type': 'goal', 'events.player': { $ne: null } } },
-    { $group: { _id: '$events.player', team: { $first: '$events.team' }, goals: { $sum: 1 } } },
-    { $sort: { goals: -1 } },
-    { $limit: limit },
-    { $lookup: { from: Player.collection.name, localField: '_id', foreignField: '_id', as: 'player' } },
-    { $unwind: '$player' },
-    { $lookup: { from: Team.collection.name, localField: 'team', foreignField: '_id', as: 'team' } },
-    { $unwind: '$team' },
-    {
-      $project: {
-        _id: 0,
-        goals: 1,
-        player: { id: '$player._id', name: '$player.name', jerseyNumber: '$player.jerseyNumber' },
-        team: { id: '$team._id', name: '$team.name', shortName: '$team.shortName' },
-      },
-    },
-  ]);
+exports.getTopScorers = async (tournamentId, limit = 10) => {
+  const { rows } = await db.query(
+    `SELECT p.id AS player_id, p.name AS player_name, p.jersey_number,
+            t.id AS team_id, t.name AS team_name, t.short_name,
+            COUNT(*)::int AS goals
+       FROM match_events e
+       JOIN matches m ON m.id = e.match_id
+       JOIN players p ON p.id = e.player_id
+       JOIN teams t   ON t.id = e.team_id
+      WHERE m.tournament_id = $1 AND e.type = 'goal'
+      GROUP BY p.id, t.id
+      ORDER BY goals DESC, p.name
+      LIMIT $2`,
+    [tournamentId, limit]
+  );
+  return rows.map((r) => ({
+    goals: r.goals,
+    player: { id: r.playerId, name: r.playerName, jerseyNumber: r.jerseyNumber },
+    team: { id: r.teamId, name: r.teamName, shortName: r.shortName },
+  }));
+};

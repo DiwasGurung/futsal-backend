@@ -10,7 +10,7 @@ const shuffleArray = (arr) => {
 // Circle-method round robin. Returns an array of rounds; each round is [[home, away], ...]
 function roundRobin(teamIds, doubleRound = false) {
   const teams = [...teamIds];
-  if (teams.length % 2 === 1) teams.push(null); // null = bye (rest) for odd team counts
+  if (teams.length % 2 === 1) teams.push(null); // null = rest day for odd team counts
   const n = teams.length;
   const half = n / 2;
   const schedule = [];

@@ -1,6 +1,9 @@
-// Safe query-string helpers (prevents NoSQL operator injection via ?field[$ne]=x)
+// Safe query-string helpers (type-checked, always bound as SQL parameters)
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
 const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-const id = (v) => (typeof v === 'string' && /^[0-9a-fA-F]{24}$/.test(v) ? v : undefined);
+const uuid = (v) => (isUuid(v) ? v : undefined);
 
 const getPagination = (query, defaultLimit = 50, maxLimit = 200) => {
   const page = Math.max(parseInt(query.page, 10) || 1, 1);
@@ -8,24 +11,21 @@ const getPagination = (query, defaultLimit = 50, maxLimit = 200) => {
   return { page, limit, skip: (page - 1) * limit };
 };
 
-const matchFilter = (q) => {
-  const f = {};
-  const tournament = id(q.tournament);
-  if (tournament) f.tournament = tournament;
-  const team = id(q.team);
-  if (team) f.$or = [{ homeTeam: team }, { awayTeam: team }];
+// Adds match filters (tournament, team, status, round, from, to) to a Where builder
+const applyMatchFilters = (where, q) => {
+  const tournament = uuid(q.tournament);
+  if (tournament) where.add('m.tournament_id = $#', tournament);
+  const team = uuid(q.team);
+  if (team) where.add('(m.home_team_id = $# OR m.away_team_id = $#)', team);
   const status = str(q.status);
-  if (status) f.status = status;
+  if (status) where.add('m.status = $#', status);
   const round = parseInt(q.round, 10);
-  if (!Number.isNaN(round)) f.round = round;
-
-  const range = {};
+  if (!Number.isNaN(round)) where.add('m.round = $#', round);
   const from = str(q.from);
+  if (from && !Number.isNaN(Date.parse(from))) where.add('m.scheduled_at >= $#', new Date(from));
   const to = str(q.to);
-  if (from && !Number.isNaN(Date.parse(from))) range.$gte = new Date(from);
-  if (to && !Number.isNaN(Date.parse(to))) range.$lte = new Date(to);
-  if (Object.keys(range).length) f.scheduledAt = range;
-  return f;
+  if (to && !Number.isNaN(Date.parse(to))) where.add('m.scheduled_at <= $#', new Date(to));
+  return where;
 };
 
-module.exports = { str, id, getPagination, matchFilter };
+module.exports = { isUuid, str, uuid, getPagination, applyMatchFilters };
