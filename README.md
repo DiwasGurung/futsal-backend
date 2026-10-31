@@ -1,16 +1,25 @@
 # Futsal Tournament SaaS – Backend
 
-Multi-tenant REST API (Node.js, Express, MongoDB, JWT, zod) for running futsal leagues and cups.
+Multi-tenant REST API (Node.js, Express, Prisma, Neon PostgreSQL, JWT, zod) for running futsal leagues and cups.
 Built to be consumed by a Flutter app: an **admin/scorekeeper app** (authenticated) and a **fan app** (public endpoints).
 
 ## Quick start
 ```bash
 npm install
-# edit .env if needed (MONGO_URI, JWT_SECRET)
+# Configure DATABASE_URL, DIRECT_URL, and JWT_SECRET in .env (see below)
+npm run prisma:generate
+npm run migrate
 npm run seed     # optional demo data
 npm run dev      # http://localhost:5000/api/health
 ```
-Or with Docker: `docker compose up --build`
+Or with Docker: `docker compose up --build` (set `DATABASE_URL` and `JWT_SECRET` in `.env`).
+
+### Neon and Prisma
+- Set `DATABASE_URL` to Neon's pooled connection string (hostname includes `-pooler`) for API traffic. The Prisma client enables PgBouncer compatibility and keeps the pool at 10 connections for this host.
+- Set `DIRECT_URL` (or Neon's `DATABASE_URL_UNPOOLED`) to the matching unpooled/direct connection string for Prisma migrations. Use Neon Console's connection details and keep both URLs private.
+- Run `npm run migrate` to apply checked-in Prisma migrations. `npm run migrate:dev` creates a migration during local schema development.
+- `prisma/schema.prisma` is the Prisma model source. `src/db/schema.sql` remains available for the Neon SQL Editor and includes the standings view, constraints, and timestamp triggers. Its initial migration is idempotent, so `npm run migrate` also records the schema if it was first created in Neon Console.
+- The API uses Prisma Client's parameterized raw-query and transaction APIs to preserve its existing SQL behavior, including the standings view and custom PostgreSQL queries.
 
 Demo logins after seeding: `owner@demo.com` / `password123`, `scorer@demo.com` / `password123`
 

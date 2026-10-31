@@ -1,5 +1,5 @@
 const env = require('./config/env');
-const { pool, connectDB } = require('./config/db');
+const { prisma, connectDB } = require('./config/db');
 const app = require('./app');
 
 (async () => {
@@ -11,7 +11,7 @@ const app = require('./app');
 
   const shutdown = () =>
     server.close(async () => {
-      await pool.end();
+      await prisma.$disconnect();
       process.exit(0);
     });
   process.on('SIGTERM', shutdown);

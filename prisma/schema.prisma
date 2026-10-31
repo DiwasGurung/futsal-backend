@@ -1,0 +1,167 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String
+  slug         String       @unique
+  plan         String       @default("free")
+  logoUrl      String?      @map("logo_url")
+  contactEmail String?      @map("contact_email")
+  isActive     Boolean      @default(true) @map("is_active")
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  users        User[]
+  tournaments  Tournament[]
+  teams        Team[]
+  players      Player[]
+  matches      Match[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  name           String
+  email          String       @unique
+  passwordHash   String       @map("password_hash")
+  role           String       @default("scorekeeper")
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([organizationId], map: "idx_users_org")
+  @@map("users")
+}
+
+model Tournament {
+  id                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId      String       @map("organization_id") @db.Uuid
+  name                String
+  slug                String
+  description         String?
+  format              String       @default("league")
+  status              String       @default("draft")
+  startDate           DateTime?    @map("start_date") @db.Timestamptz(6)
+  endDate             DateTime?    @map("end_date") @db.Timestamptz(6)
+  venue               String?
+  pointsWin           Int          @default(3) @map("points_win")
+  pointsDraw          Int          @default(1) @map("points_draw")
+  pointsLoss          Int          @default(0) @map("points_loss")
+  halfDurationMinutes Int          @default(20) @map("half_duration_minutes")
+  fixturesGenerated   Boolean      @default(false) @map("fixtures_generated")
+  createdAt           DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  teams               Team[]
+  matches             Match[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId], map: "idx_tournaments_org")
+  @@map("tournaments")
+}
+
+model Team {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  tournamentId   String       @map("tournament_id") @db.Uuid
+  name           String
+  shortName      String?      @map("short_name")
+  logoUrl        String?      @map("logo_url")
+  managerName    String?      @map("manager_name")
+  managerPhone   String?      @map("manager_phone")
+  managerEmail   String?      @map("manager_email")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tournament     Tournament   @relation(fields: [tournamentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  players        Player[]
+  homeMatches    Match[]      @relation("HomeTeam")
+  awayMatches    Match[]      @relation("AwayTeam")
+  wonMatches     Match[]      @relation("Winner")
+  events         MatchEvent[]
+
+  @@unique([tournamentId, name])
+  @@index([organizationId], map: "idx_teams_org")
+  @@map("teams")
+}
+
+model Player {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  teamId         String       @map("team_id") @db.Uuid
+  name           String
+  jerseyNumber   Int          @map("jersey_number")
+  position       String?
+  dateOfBirth    DateTime?    @map("date_of_birth") @db.Date
+  isActive       Boolean      @default(true) @map("is_active")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  team           Team         @relation(fields: [teamId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  events         MatchEvent[]
+
+  @@unique([teamId, jerseyNumber])
+  @@index([organizationId], map: "idx_players_org")
+  @@map("players")
+}
+
+model Match {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  seq            BigInt       @default(autoincrement())
+  organizationId String       @map("organization_id") @db.Uuid
+  tournamentId   String       @map("tournament_id") @db.Uuid
+  round          Int
+  roundName      String?      @map("round_name")
+  homeTeamId     String       @map("home_team_id") @db.Uuid
+  awayTeamId     String?      @map("away_team_id") @db.Uuid
+  scheduledAt    DateTime?    @map("scheduled_at") @db.Timestamptz(6)
+  court          String?
+  status         String       @default("scheduled")
+  homeScore      Int          @default(0) @map("home_score")
+  awayScore      Int          @default(0) @map("away_score")
+  penaltyHome    Int?         @map("penalty_home")
+  penaltyAway    Int?         @map("penalty_away")
+  winnerId       String?      @map("winner_id") @db.Uuid
+  isBye          Boolean      @default(false) @map("is_bye")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tournament     Tournament   @relation(fields: [tournamentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  homeTeam       Team         @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  awayTeam       Team?        @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  winner         Team?        @relation("Winner", fields: [winnerId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  events         MatchEvent[]
+
+  @@index([tournamentId, round], map: "idx_matches_tournament_round")
+  @@index([tournamentId, status], map: "idx_matches_tournament_status")
+  @@index([organizationId, scheduledAt], map: "idx_matches_org_date")
+  @@index([homeTeamId], map: "idx_matches_home")
+  @@index([awayTeamId], map: "idx_matches_away")
+  @@map("matches")
+}
+
+model MatchEvent {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  matchId   String   @map("match_id") @db.Uuid
+  type      String
+  teamId    String   @map("team_id") @db.Uuid
+  playerId  String?  @map("player_id") @db.Uuid
+  minute    Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  player    Player?  @relation(fields: [playerId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([matchId], map: "idx_events_match")
+  @@index([playerId], map: "idx_events_player")
+  @@map("match_events")
+}

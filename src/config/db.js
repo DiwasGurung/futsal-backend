@@ -1,52 +1,59 @@
-const { Pool } = require('pg');
+const { PrismaClient } = require('@prisma/client');
 const env = require('./env');
 
-// Neon: sslmode=require in DATABASE_URL enables TLS. Neon computes auto-suspend when idle,
-// so keep the pool small, drop idle clients quickly and never crash on idle-client errors.
-const pool = new Pool({
-  connectionString: env.databaseUrl,
-  max: 10,
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 15_000, // allows for a cold start of a suspended Neon compute
+const databaseUrl = new URL(env.databaseUrl);
+if (databaseUrl.hostname.includes('-pooler')) {
+  if (!databaseUrl.searchParams.has('pgbouncer')) databaseUrl.searchParams.set('pgbouncer', 'true');
+  if (!databaseUrl.searchParams.has('connection_limit')) databaseUrl.searchParams.set('connection_limit', '10');
+  if (!databaseUrl.searchParams.has('connect_timeout')) databaseUrl.searchParams.set('connect_timeout', '15');
+}
+
+const prisma = new PrismaClient({
+  datasources: { db: { url: databaseUrl.toString() } },
+  log: env.nodeEnv === 'development' ? ['warn', 'error'] : ['error'],
 });
-pool.on('error', (err) => console.error('Idle PG client error:', err.message));
 
 const camel = (s) => s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 const camelRow = (row) => {
   const out = {};
-  for (const k of Object.keys(row)) out[camel(k)] = row[k];
+  for (const k of Object.keys(row)) {
+    const value = row[k];
+    out[camel(k)] =
+      typeof value === 'bigint'
+        ? value.toString()
+        : k === 'date_of_birth' && value instanceof Date
+          ? value.toISOString().slice(0, 10)
+          : value;
+  }
   return out;
 };
 
-// Runner wrapper: returns rows with camelCase keys (organization_id -> organizationId)
+// Keep the existing SQL runner contract while using Prisma's Neon-compatible client.
 const wrap = (runner) => ({
-  async query(text, params) {
-    const r = await runner.query(text, params);
-    return { rows: r.rows.map(camelRow), rowCount: r.rowCount };
+  async query(text, params = []) {
+    const returnsRows =
+      /^\s*(SELECT|WITH|VALUES|SHOW|EXPLAIN)\b/i.test(text) || /\bRETURNING\b/i.test(text);
+    if (!returnsRows) {
+      const rowCount = await runner.$executeRawUnsafe(text, ...params);
+      return { rows: [], rowCount };
+    }
+
+    const rows = await runner.$queryRawUnsafe(text, ...params);
+    return { rows: rows.map(camelRow), rowCount: rows.length };
   },
 });
 
-const db = wrap(pool);
+const db = wrap(prisma);
 
-// Runs fn(tx) inside BEGIN/COMMIT; rolls back on error
-async function tx(fn) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const result = await fn(wrap(client));
-    await client.query('COMMIT');
-    return result;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
-}
+const tx = (fn) =>
+  prisma.$transaction((transaction) => fn(wrap(transaction)), {
+    maxWait: 15_000,
+    timeout: 60_000,
+  });
 
 async function connectDB() {
   try {
-    const { rows } = await pool.query('SELECT current_database() AS db, version() AS v');
+    const rows = await prisma.$queryRawUnsafe('SELECT current_database() AS db');
     console.log(`PostgreSQL connected: ${rows[0].db}`);
   } catch (err) {
     console.error('PostgreSQL connection error:', err.message);
@@ -54,4 +61,4 @@ async function connectDB() {
   }
 }
 
-module.exports = { pool, db, tx, connectDB };
+module.exports = { prisma, db, tx, connectDB };

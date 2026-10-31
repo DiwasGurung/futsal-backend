@@ -1,6 +1,6 @@
 // Usage: npm run seed  -> demo organization with a league, teams, players and two played matchdays
 const bcrypt = require('bcryptjs');
-const { db, tx, pool } = require('../config/db');
+const { db, tx, prisma } = require('../config/db');
 const { insertRow } = require('../utils/sql');
 const { createLeagueFixtures } = require('../services/fixtureService');
 
@@ -72,7 +72,7 @@ const POSITIONS = ['goalkeeper', 'fixo', 'ala', 'ala', 'pivot', 'pivot'];
   console.log('  Owner:       owner@demo.com / password123');
   console.log('  Scorekeeper: scorer@demo.com / password123');
   console.log('  Public:      GET /api/public/demo-futsal/tournaments/spring-futsal-cup/standings');
-  await pool.end();
+  await prisma.$disconnect();
 })().catch((err) => {
   console.error(err);
   process.exit(1);
